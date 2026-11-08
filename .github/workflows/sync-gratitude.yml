@@ -1,0 +1,78 @@
+
+name: Sync Gratitude Leaves
+
+on:
+  repository_dispatch:
+    types: [gratitude_updated]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-leaves:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate and save approved leaves
+        env:
+          EVENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          if os.environ["EVENT_NAME"] != "repository_dispatch":
+              print("Manual run: no data received. No file changed.")
+              raise SystemExit(0)
+
+          payload = json.loads(os.environ["EVENT_PAYLOAD"])
+          leaves = payload.get("leaves")
+
+          if not isinstance(leaves, list):
+              raise ValueError("Payload must contain a leaves array.")
+
+          approved = []
+
+          for leaf in leaves:
+              if not isinstance(leaf, dict):
+                  raise ValueError("Invalid leaf record.")
+
+              if leaf.get("status") != "Approved":
+                  raise ValueError("Unapproved record received.")
+
+              if not isinstance(leaf.get("message"), str):
+                  raise ValueError("Invalid gratitude message.")
+
+              approved.append({
+                  "id": leaf["id"],
+                  "message": leaf["message"],
+                  "status": "Approved"
+              })
+
+          Path("approved-leaves.json").write_text(
+              json.dumps(approved, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8"
+          )
+
+          print("Validated approved leaves:", len(approved))
+          PY
+
+      - name: Commit updated leaves
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add approved-leaves.json
+
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+          else
+            git commit -m "Update approved gratitude leaves"
+            git push
+          fi
